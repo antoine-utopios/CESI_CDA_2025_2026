@@ -1,0 +1,29 @@
+keyA: value
+keyB: 12345
+keyC: true
+
+empty-array: []
+
+array: [1, abc, false]
+
+array-listing: 
+  - 2
+  - def
+  - true
+
+empty-object: {}
+
+object: { prenom: john, nom: doe, age: 30 }
+
+object-listing:
+  prenom: john
+  nom: doe
+  age: 30
+
+objects-array:
+  - prenom: john
+    nom: doe
+    age: 30
+  - prenom: jane
+    nom: doe
+    age: 25
