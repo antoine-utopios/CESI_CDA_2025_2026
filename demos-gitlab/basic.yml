@@ -1,0 +1,39 @@
+# Stages:
+## - .pre
+## - build
+## - test
+## - deploy
+## - .post
+
+stages:
+  - compil
+  - test-compil
+  # - test-unit
+  # - test-e2e
+  - deploy-staging
+
+mon-premier-job:
+  stage: compil
+  script:
+    - echo "Hello, World!"
+    - mkdir -p build
+    - echo "Je suis le fichier" > build/file.txt
+  artifacts:
+    paths:
+      - build/
+
+mon-autre-job:
+  stage: test-compil
+  dependencies: 
+    - mon-premier-job
+  script:
+    - echo "Autre job!"
+    - file build/file.txt
+    - cat build/file.txt | grep 'fichier' 
+
+mon-deuxieme-job:
+  stage: deploy-staging
+  dependencies: []
+  script: |
+    echo "Première instruction"
+    echo "Deuxième instruction"
