@@ -1,0 +1,21 @@
+stages:
+  - build
+  - test-build
+
+build-app:
+  stage: build
+  image: node:25.9.0-alpine
+  script:
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+
+mon-autre-job:
+  stage: test-build
+  dependencies: 
+    - build-app
+  script:
+    - file dist/index.html
+    - cat dist/index.html | grep '<title>demo-pipeline-base</title>'
