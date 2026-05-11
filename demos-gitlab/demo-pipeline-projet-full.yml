@@ -1,0 +1,129 @@
+workflow:
+  rules:
+    - if: "$CI_PIPELINE_SOURCE == 'merge_request_event'"
+    - if: "$CI_COMMIT_TAG"
+    - if: "$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH"
+
+variables:
+  MVN_CLI_OPTS: "-B -Dmaven.repo.local=.m2/repository -Dmaven.test.failure.ignore=false"
+  DOCKER_CONTAINER_NAME: "mon-app-spring"
+  DOCKER_IMAGE_NAME: "$CI_REGISTRY_IMAGE/$DOCKER_CONTAINER_NAME"
+  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+  GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+
+
+default:
+  image: maven:3.9.8-eclipse-temurin-21
+
+cache:
+  key: "maven-cache-${CI_COMMIT_SHORT_SHA}"
+  paths:
+    - .m2/repository/
+    - target/
+
+stages:
+  - build
+  - test
+  - analyze
+  - package
+  - dep_check
+  - deploy
+
+# Job permettant de vérifier que l'application compile correctement
+build_app:
+  stage: build
+  script:
+    - mvn clean install $MVN_CLI_OPTS -DskipTests
+  rules:
+    - if: "$CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH"
+
+# Job servant à faire les tests unitaires via Surefire et à publier un rapport de ces tests, ainsi qu'un rapport de couverture du code via Jacoco
+test_app:
+  stage: test
+  script:
+    - mvn clean verify $MVN_CLI_OPTS
+  artifacts:
+    paths:
+      - target/surefire-reports/
+      - target/site/jacoco/
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+    expire_in: 1 week
+  rules:
+    - if: "$CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH"
+
+sonarcloud-check:
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - mvn verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+  rules:
+    - if: "$CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH"
+
+
+# Ajout d'un job permettant de garder une trace des vulnérabilités de nos dépendances (les différents packages utilisés par notre application dont on a pas le code)
+trivy_fs_scan:
+  stage: dep_check
+  image:
+    name: aquasec/trivy:0.67.0
+    entrypoint: [""]
+  script:
+    - trivy fs --exit-code 0 --no-progress --severity HIGH,CRITICAL -f json -o gl-dependency-scanning-report.json .
+  artifacts:
+    reports:
+      dependency_scanning: gl-dependency-scanning-report.json
+  rules:
+    - if: "$CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH"
+
+# Job servant à la réalisation d'une image Docker pour notre application, laquelle se verra stockée dans le registre des images de conteneurs privé de notre projet sur Gitlab CI
+package_app:
+  stage: package
+  image: docker:28
+  # Pour faire des commandes Docker, il faut aussi avoir un Docker Engine, en l'occurance, on va aussi le dockerizer et on l'inscris en tant que service (autre conteneur instancié en amont de notre conteneur de job)
+  services:
+    - docker:28-dind
+  # On doit se loguer en amont des commandes de script, mais on ne veut pas polluer l'affichage de la partie 'script', qui doit garder un objectif clair et précis. On passe donc par un 'before_script'
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - docker build -t $DOCKER_IMAGE_NAME:$CI_COMMIT_SHORT_SHA .
+    - docker build -t $DOCKER_IMAGE_NAME:latest .
+    - docker push -a $DOCKER_IMAGE_NAME
+  rules:
+    - if: "$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH"
+
+# Job permettant le déploiement de notre application sur AWS - EC2
+deploy_app:
+  stage: deploy
+  image: alpine
+  before_script:
+    # On ajoute le client SSH
+    - apk add openssh-client
+    # On crée s'il n'existe pas encore le dossier .ssh
+    - mkdir -p ~/.ssh/
+    # On récupère et on décode le fichier des hôtes connus
+    - echo "$AWS_KNOWN_HOSTS_BASE64" | base64 -d > ~/.ssh/known_hosts
+    # On en change les droits pour que le client SSH l'accepte
+    - chmod 600 ~/.ssh/known_hosts
+    # On récupère et on décode le fichier de la clé privée pour se connecter à l'EC2
+    - echo "$AWS_PRIVATE_KEY_BASE64" | base64 -d > id_rsa
+    # On en change les droits pour que le client SSH ne râle pas trop
+    - chmod 600 id_rsa
+  # Autre syntaxe pour le script si c'est un one-liner
+  script: |
+      ssh -i id_rsa $AWS_USER@$AWS_HOST_URL << EOF
+        echo "$CI_REGISTRY_PASSWORD" | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY && \
+        docker stop $DOCKER_CONTAINER_NAME || true && \
+        docker rm $DOCKER_CONTAINER_NAME || true && \
+        docker run -d --name $DOCKER_CONTAINER_NAME -p 80:8080 --restart unless-stopped $DOCKER_IMAGE_NAME:latest
+      EOF
+  rules:
+    - if: "$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH"
+
+#  script:
+#    - ssh -i id_rsa $AWS_USER@$AWS_HOST_URL "echo "$CI_REGISTRY_PASSWORD" | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY && \
+#      docker stop $DOCKER_CONTAINER_NAME || true && \
+#      docker rm $DOCKER_CONTAINER_NAME || true && \
+#      docker run -d --name $DOCKER_CONTAINER_NAME -p 80:8080 --restart unless-stopped $DOCKER_IMAGE_NAME:latest"
