@@ -1,0 +1,46 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  tags:
+    - docker
+    - local
+
+job-all-branches:
+  image: alpine
+  stage: test
+  script:
+    - echo "Je suis un job de branche de dev ou autre... n'étant pas la branche principale"
+  rules:
+    - if: $CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH
+
+.common: 
+  tags:
+    - docker
+    - local
+
+.job-main:
+  extends:
+    - .common
+  image: alpine
+  stage: test
+  script:
+    - echo "Je suis un job de branche principale"
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+
+packaging-image:
+  image: docker
+  services:
+    - docker:dind
+  stage: deploy
+  before_script: 
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - docker push -a $CI_REGISTRY_IMAGE
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
